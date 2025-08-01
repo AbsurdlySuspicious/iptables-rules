@@ -1,0 +1,8 @@
+[submodule "libs/python-iptables-bf"]
+	path = libs/python-iptables-bf
+	url = https://github.com/AbsurdlySuspicious/python-iptables.git
+	branch = base-field
+[submodule "libs/python-iptables-master"]
+	path = libs/python-iptables-master
+	url = https://github.com/AbsurdlySuspicious/python-iptables.git
+	branch = master
