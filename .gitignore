@@ -4,3 +4,4 @@
 __pycache__/
 libs/python-iptables
 ruleset_*.py
+nginx_rip.conf

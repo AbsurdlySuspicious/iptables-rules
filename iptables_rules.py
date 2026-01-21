@@ -1,4 +1,5 @@
-from typing import Any, Self, assert_never
+import itertools
+from typing import Any, Callable, Self, assert_never
 from collections.abc import Iterable
 import enum
 from iptc.ip4tc import Table, Rule, Chain, Match, Target
@@ -211,12 +212,14 @@ class PendingRule:
                     self.params.proto = m.proto_match
                     self.params.apply(rule, version)
                 elif self.params.proto != m.proto_match:
-                    raise Exception("Mismatching protocols in matcher and route params", m, self)
+                    raise Exception(
+                        "Mismatching protocols in matcher and route params", m, self
+                    )
             m.apply(rule, version)
         self.added_rules.append(rule)
         return rule
 
-    def add_to_chain(self, at_pos: int|None = None):
+    def add_to_chain(self, at_pos: int | None = None):
         self.added_rules.clear()
         for ip_version in IP.iter_proto(self.chain.get_ip_ver(self.ip_version)):
             rule = self._inflate_rule(ip_version)
@@ -394,7 +397,9 @@ class DeclarativeChain:
             self.chain(v).set_policy(policy)
         return self
 
-    def delete(self, version: IP | None = None, uninject_chains: list[Self] | None = None):
+    def delete(
+        self, version: IP | None = None, uninject_chains: list[Self] | None = None
+    ):
         for u_chain in uninject_chains or ():
             Inject(u_chain, self).uninject()
         for v in IP.iter_proto(self.get_ip_ver(version)):
@@ -475,7 +480,7 @@ class Inject:
             *matches,
             t=j(jump_chain.chain_name),
             ip=jump_chain.get_ip_ver(ip),
-            add=False
+            add=False,
         )
         if place == InjectPos.First:
             rule_i.add_to_chain(at_pos=0)
@@ -517,3 +522,81 @@ FORWARD = "FORWARD"
 ACCEPT = "ACCEPT"
 DROP = "DROP"
 RETURN = "RETURN"
+
+
+class Whitelist:
+    def get_ipv4(self) -> list[str]:
+        raise NotImplementedError
+
+    def get_ipv6(self) -> list[str]:
+        raise NotImplementedError
+
+    def get_header(self) -> str:
+        raise NotImplementedError
+
+
+class WhitelistCF(Whitelist):
+    def _get_addrs(self, kind: str) -> list[str]:
+        import requests
+
+        resp = requests.get(f"https://www.cloudflare.com/ips-{kind}")
+        return resp.text.splitlines()
+
+    def get_ipv4(self) -> list[str]:
+        return self._get_addrs("v4")
+
+    def get_ipv6(self) -> list[str]:
+        return self._get_addrs("v6")
+
+    def get_header(self) -> str:
+        return "cf_connecting_ip"
+
+
+def _whitelist_nginx(whxs: list[Whitelist]):
+    def _map_key(n: int):
+        key = []
+        for i in range(len(whxs)):
+            key.append("1" if i == n else "0")
+        return ":".join(key)
+
+    def _geo(w: Whitelist):
+        ips = [*w.get_ipv4(), *w.get_ipv6()]
+        for ip in ips:
+            yield f"set_real_ip_from {ip};"
+        yield f"geo $realip_remote_addr $rip_use_{w.get_header()} {{"
+        yield "  default 0;"
+        for ip in ips:
+            yield f"  {ip} 1;"
+        yield "}"
+
+    map_val = ":".join(f"$rip_use_{w.get_header()}" for w in whxs)
+    map_lines = [f'map "{map_val}" $real_ip {{']
+    
+    for i, w in enumerate(whxs):
+        map_line = f'  "{_map_key(i)}" $http_{w.get_header()};'
+        map_lines.append(map_line)
+
+    map_lines.extend(
+        (
+            "}",
+            'more_set_input_headers "X-Nginx-IP: $real_ip";',
+            "real_ip_header X-Nginx-IP;",
+        )
+    )
+
+    lines = []
+    for w in whxs:
+        lines.extend(_geo(w))
+    lines.extend(map_lines)
+
+    with open("nginx_rip.conf", "w") as f:
+        f.write("\n".join(lines))
+
+
+def whitelist(rule_cb: Callable[[str, DeclarativeChain, IP], PendingRule], *whxs: tuple[DeclarativeChain, Whitelist]):
+    _whitelist_nginx(list(wt[1] for wt in whxs))
+    for chain, w in whxs:
+        for ip in w.get_ipv4():
+            rule_cb(ip, chain, IP.v4)
+        for ip in w.get_ipv6():
+            rule_cb(ip, chain, IP.v6)
