@@ -1,5 +1,5 @@
 import itertools
-from typing import Any, Callable, Self, assert_never
+from typing import Any, Callable, Self, Union, assert_never
 from collections.abc import Iterable
 import enum
 from iptc.ip4tc import Table, Rule, Chain, Match, Target
@@ -141,12 +141,19 @@ class PendingTarget:
         return i
 
 
-def jump(name: str, **params: ParamValues):
-    return PendingTarget(name, params)
+def chain_target(tgt: Union[str, "DeclarativeChain"], *, goto: bool, **params: ParamValues):
+    if isinstance(tgt, DeclarativeChain):
+        name = tgt.chain_name
+    else:
+        name = tgt
+    return PendingTarget(name, params, goto=goto)
+
+def jump(tgt: Union[str, "DeclarativeChain"], **params: ParamValues):
+    return chain_target(tgt, goto=False, **params)
 
 
-def goto(name: str, **params: ParamValues):
-    return PendingTarget(name, params, goto=True)
+def goto(tgt: Union[str, "DeclarativeChain"], **params: ParamValues):
+    return chain_target(tgt, goto=True, **params)
 
 
 @dataclass
