@@ -137,6 +137,8 @@ class PendingTarget:
 
     def apply(self, rule: RuleAny):
         i = Target(rule, self.name, goto=self.goto)
+        for k, v in self.params.items():
+            setattr(i, k, PendingMatch._prepare_value(v))
         rule.target = i
         return i
 
