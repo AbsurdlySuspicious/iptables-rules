@@ -12,12 +12,12 @@ r(custom_in, p(proto=ICMP), t=j(ACCEPT))
 r(custom_in, p(), m("conntrack", ctstate="RELATED,ESTABLISHED"), t=j(ACCEPT))
 r(custom_in, p(), m(TCP, dport=22), t=j(ACCEPT))  # ssh
 r(custom_in, p(), m(UDP, dport="60001:60030"), t=j(ACCEPT))  # mosh
-r(custom_in, p(), t=j(cf_wl))
+r(custom_in, p(proto=TCP), m("multiport", dports=[80, 443]), t=j(cf_wl))
 r(custom_in, p(proto=TCP), t=j("REJECT", reject_with="tcp-reset"))
 Inject(chain_in, custom_in).inject()
 
 whitelist(
-    lambda ip, chain, v: r(chain, p(proto=TCP, src=ip_network(ip)), m("multiport", dports=[80, 443]), t=j(ACCEPT), ip=v),
+    lambda c: r(c.chain, p(src=c.net), t=j(ACCEPT), ip=c.ipv),
     (cf_wl, WhitelistCF()),
 )
 
