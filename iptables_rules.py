@@ -1,4 +1,4 @@
-import itertools
+from abc import ABCMeta, abstractmethod
 from typing import Any, Callable, Self, Union, assert_never
 from collections.abc import Iterable
 import enum
@@ -141,12 +141,15 @@ class PendingTarget:
         return i
 
 
-def chain_target(tgt: Union[str, "DeclarativeChain"], *, goto: bool, **params: ParamValues):
+def chain_target(
+    tgt: Union[str, "DeclarativeChain"], *, goto: bool, **params: ParamValues
+):
     if isinstance(tgt, DeclarativeChain):
         name = tgt.chain_name
     else:
         name = tgt
     return PendingTarget(name, params, goto=goto)
+
 
 def jump(tgt: Union[str, "DeclarativeChain"], **params: ParamValues):
     return chain_target(tgt, goto=False, **params)
@@ -531,13 +534,16 @@ DROP = "DROP"
 RETURN = "RETURN"
 
 
-class Whitelist:
+class Whitelist(metaclass=ABCMeta):
+    @abstractmethod
     def get_ipv4(self) -> list[str]:
         raise NotImplementedError
 
+    @abstractmethod
     def get_ipv6(self) -> list[str]:
         raise NotImplementedError
 
+    @abstractmethod
     def get_header(self) -> str:
         raise NotImplementedError
 
@@ -559,7 +565,7 @@ class WhitelistCF(Whitelist):
         return "cf_connecting_ip"
 
 
-def _whitelist_nginx(whxs: list[Whitelist]):
+def _whitelist_nginx(whxs: list[Whitelist]) -> str:
     def _map_key(n: int):
         key = []
         for i in range(len(whxs)):
@@ -576,34 +582,48 @@ def _whitelist_nginx(whxs: list[Whitelist]):
             yield f"  {ip} 1;"
         yield "}"
 
-    map_val = ":".join(f"$rip_use_{w.get_header()}" for w in whxs)
-    map_lines = [f'map "{map_val}" $real_ip {{']
-    
-    for i, w in enumerate(whxs):
-        map_line = f'  "{_map_key(i)}" $http_{w.get_header()};'
-        map_lines.append(map_line)
+    def _map():
+        map_val = ":".join(f"$rip_use_{w.get_header()}" for w in whxs)
+        yield f'map "{map_val}" $real_ip {{'
 
-    map_lines.extend(
-        (
+        for i, w in enumerate(whxs):
+            yield f'  "{_map_key(i)}" $http_{w.get_header()};'
+
+        yield from (
             "}",
             'more_set_input_headers "X-Nginx-IP: $real_ip";',
             "real_ip_header X-Nginx-IP;",
         )
-    )
 
-    lines = []
-    for w in whxs:
-        lines.extend(_geo(w))
-    lines.extend(map_lines)
+    def _compose():
+        for w in whxs:
+            yield from _geo(w)
+        yield from _map()
 
-    with open("nginx_rip.conf", "w") as f:
-        f.write("\n".join(lines))
+    return "\n".join(_compose())
 
 
-def whitelist(rule_cb: Callable[[str, DeclarativeChain, IP], PendingRule], *whxs: tuple[DeclarativeChain, Whitelist]):
-    _whitelist_nginx(list(wt[1] for wt in whxs))
+@dataclass
+class WhitelistRuleParams:
+    net: str
+    chain: DeclarativeChain
+    ipv: IP
+
+
+def whitelist(
+    rule_cb: Callable[[WhitelistRuleParams], PendingRule],
+    *whxs: tuple[DeclarativeChain, Whitelist],
+    ngx_rip_file: str | None = "nginx_rip.conf",
+):
+    if ngx_rip_file is not None:
+        rip = _whitelist_nginx(list(wt[1] for wt in whxs))
+        with open(ngx_rip_file, "w") as f:
+            f.write(rip)
+
+    def _add_rules(ips: list[str], ipv: IP):
+        for ip in ips:
+            rule_cb(WhitelistRuleParams(ip, chain, ipv))
+
     for chain, w in whxs:
-        for ip in w.get_ipv4():
-            rule_cb(ip, chain, IP.v4)
-        for ip in w.get_ipv6():
-            rule_cb(ip, chain, IP.v6)
+        _add_rules(w.get_ipv4(), IP.v4)
+        _add_rules(w.get_ipv6(), IP.v6)
